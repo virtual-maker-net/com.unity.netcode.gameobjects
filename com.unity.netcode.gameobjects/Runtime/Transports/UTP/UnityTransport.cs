@@ -944,17 +944,13 @@ namespace Unity.Netcode.Transports.UTP
             return false;
         }
 
-        private void Update()
+        /// <summary>
+        /// Handles accepting new connections and processing transport events.
+        /// </summary>
+        protected override void OnEarlyUpdate()
         {
             if (m_Driver.IsCreated)
             {
-                foreach (var kvp in m_SendQueue)
-                {
-                    SendBatchedMessages(kvp.Key, kvp.Value);
-                }
-
-                m_Driver.ScheduleUpdate().Complete();
-
                 if (m_ProtocolType == ProtocolType.RelayUnityTransport && m_Driver.GetRelayConnectionStatus() == RelayConnectionStatus.AllocationInvalid)
                 {
                     Debug.LogError("Transport failure! Relay allocation needs to be recreated, and NetworkManager restarted. " +
@@ -964,15 +960,38 @@ namespace Unity.Netcode.Transports.UTP
                     return;
                 }
 
+                m_Driver.ScheduleUpdate().Complete();
+
+                // Process any new connections
                 while (AcceptConnection() && m_Driver.IsCreated)
                 {
                     ;
                 }
 
+                // Process any transport events (i.e. connect, disconnect, data, etc)
                 while (ProcessEvent() && m_Driver.IsCreated)
                 {
                     ;
                 }
+            }
+            base.OnEarlyUpdate();
+        }
+
+        /// <summary>
+        /// Handles sending any queued batched messages.
+        /// </summary>
+        protected override void OnPostLateUpdate()
+        {
+            if (m_Driver.IsCreated)
+            {
+                foreach (var kvp in m_SendQueue)
+                {
+                    SendBatchedMessages(kvp.Key, kvp.Value);
+                }
+
+                // Schedule a flush send as the last transport action for the
+                // current frame.
+                m_Driver.ScheduleFlushSend(default).Complete();
 
 #if MULTIPLAYER_TOOLS_1_0_0_PRE_7
                 if (m_NetworkManager)
@@ -981,6 +1000,7 @@ namespace Unity.Netcode.Transports.UTP
                 }
 #endif
             }
+            base.OnPostLateUpdate();
         }
 
         private void OnDestroy()
@@ -1452,6 +1472,11 @@ namespace Unity.Netcode.Transports.UTP
         {
             if (m_Driver.IsCreated)
             {
+                while (ProcessEvent() && m_Driver.IsCreated)
+                {
+                    ;
+                }
+
                 // Flush all send queues to the network. NGO can be configured to flush its message
                 // queue on shutdown. But this only calls the Send() method, which doesn't actually
                 // get anything to the network.

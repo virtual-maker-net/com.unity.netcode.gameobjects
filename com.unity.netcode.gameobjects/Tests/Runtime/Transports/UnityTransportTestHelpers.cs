@@ -43,7 +43,7 @@ namespace Unity.Netcode.RuntimeTests
             var logger = new TransportEventLogger();
             events = logger.Events;
 
-            transport = new GameObject().AddComponent<UnityTransport>();
+            transport = new GameObject().AddComponent<UnityTransportTestComponent>();
 
             transport.OnTransportEvent += logger.HandleEvent;
             transport.MaxPayloadSize = maxPayloadSize;
@@ -89,6 +89,59 @@ namespace Unity.Netcode.RuntimeTests
                     Data = data,
                     ReceiveTime = receiveTime
                 });
+            }
+        }
+
+        internal class UnityTransportTestComponent : UnityTransport, INetworkUpdateSystem
+        {
+            private static List<UnityTransportTestComponent> s_Instances = new List<UnityTransportTestComponent>();
+
+            public static void CleanUp()
+            {
+                for (int i = s_Instances.Count - 1; i >= 0; i--)
+                {
+                    var instance = s_Instances[i];
+                    instance.Shutdown();
+                    DestroyImmediate(instance.gameObject);
+                }
+                s_Instances.Clear();
+            }
+
+            /// <summary>
+            /// Simulate the <see cref="NetworkManager.NetworkUpdate"/> being invoked so <see cref="UnityTransport.EarlyUpdate"/>
+            /// and <see cref="UnityTransport.PostLateUpdate"/> are invoked.
+            /// </summary>
+            public void NetworkUpdate(NetworkUpdateStage updateStage)
+            {
+                switch (updateStage)
+                {
+                    case NetworkUpdateStage.EarlyUpdate:
+                        {
+                            EarlyUpdate();
+                            break;
+                        }
+                    case NetworkUpdateStage.PostLateUpdate:
+                        {
+                            PostLateUpdate();
+                            break;
+                        }
+                }
+            }
+
+            public override void Shutdown()
+            {
+                s_Instances.Remove(this);
+                base.Shutdown();
+                this.UnregisterAllNetworkUpdates();
+            }
+
+            public override void Initialize(NetworkManager networkManager = null)
+            {
+                base.Initialize(networkManager);
+                this.RegisterNetworkUpdate(NetworkUpdateStage.EarlyUpdate);
+                this.RegisterNetworkUpdate(NetworkUpdateStage.PreUpdate);
+                this.RegisterNetworkUpdate(NetworkUpdateStage.PostLateUpdate);
+                s_Instances.Add(this);
             }
         }
     }
