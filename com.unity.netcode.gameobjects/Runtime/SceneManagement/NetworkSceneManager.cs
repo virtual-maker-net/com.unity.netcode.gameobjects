@@ -526,6 +526,16 @@ namespace Unity.Netcode
         internal Dictionary<int, uint> BuildIndexToHash = new Dictionary<int, uint>();
 
         /// <summary>
+        /// Hash to external scene path lookup table
+        /// </summary>
+        internal Dictionary<uint, string> HashToExternalScenePath = new Dictionary<uint, string>();
+
+        /// <summary>
+        /// External scene name to hash lookup table
+        /// </summary>
+        internal Dictionary<string, uint> ExternalScenePathToHash = new Dictionary<string, uint>();
+
+        /// <summary>
         /// The Condition: While a scene is asynchronously loaded in single loading scene mode, if any new NetworkObjects are spawned
         /// they need to be moved into the do not destroy temporary scene
         /// When it is set: Just before starting the asynchronous loading call
@@ -707,6 +717,22 @@ namespace Unity.Netcode
         }
 
         /// <summary>
+        /// Register scene from outside of build (e.g. from an Addressables group).
+        /// </summary>
+        /// <param name="scenePaths">The paths of the external scenes to register.</param>
+        public void RegisterExternalScenes(params string[] scenePaths)
+        {
+            HashToExternalScenePath.Clear();
+            ExternalScenePathToHash.Clear();
+            foreach (var scenePath in scenePaths)
+            {
+                var hash = XXHash.Hash32(scenePath);
+                HashToExternalScenePath.Add(hash, scenePath);
+                ExternalScenePathToHash.Add(scenePath, hash);
+            }
+        }
+
+        /// <summary>
         /// Gets the scene name from a hash value generated from the full scene path
         /// </summary>
         internal string SceneNameFromHash(uint sceneHash)
@@ -727,7 +753,11 @@ namespace Unity.Netcode
         /// </summary>
         internal string ScenePathFromHash(uint sceneHash)
         {
-            if (HashToBuildIndex.ContainsKey(sceneHash))
+            if (HashToExternalScenePath.TryGetValue(sceneHash, out var externalScenePath))
+            {
+                return externalScenePath;
+            }
+            else if (HashToBuildIndex.ContainsKey(sceneHash))
             {
                 return SceneUtility.GetScenePathByBuildIndex(HashToBuildIndex[sceneHash]);
             }
@@ -743,6 +773,11 @@ namespace Unity.Netcode
         /// </summary>
         internal uint SceneHashFromNameOrPath(string sceneNameOrPath)
         {
+            if (ExternalScenePathToHash.TryGetValue(sceneNameOrPath, out var externalSceneHash))
+            {
+                return externalSceneHash;
+            }
+
             var buildIndex = SceneUtility.GetBuildIndexByScenePath(sceneNameOrPath);
             if (buildIndex >= 0)
             {
