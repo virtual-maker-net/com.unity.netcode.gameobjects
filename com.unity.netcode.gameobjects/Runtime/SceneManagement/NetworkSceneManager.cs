@@ -528,12 +528,12 @@ namespace Unity.Netcode
         /// <summary>
         /// Hash to external scene path lookup table
         /// </summary>
-        internal Dictionary<uint, string> HashToExternalScenePath = new Dictionary<uint, string>();
+        internal Dictionary<uint, string> HashToAddressableName = new Dictionary<uint, string>();
 
         /// <summary>
         /// External scene name to hash lookup table
         /// </summary>
-        internal Dictionary<string, uint> ExternalScenePathToHash = new Dictionary<string, uint>();
+        internal Dictionary<string, uint> AddressableNameOrScenePathToHash = new Dictionary<string, uint>();
 
         /// <summary>
         /// The Condition: While a scene is asynchronously loaded in single loading scene mode, if any new NetworkObjects are spawned
@@ -720,16 +720,12 @@ namespace Unity.Netcode
         /// Register scene from outside of build (e.g. from an Addressables group).
         /// </summary>
         /// <param name="scenePaths">The paths of the external scenes to register.</param>
-        public void RegisterExternalScenes(params string[] scenePaths)
+        public void RegisterAddressableScene(string addressablePath, string editorScenePath)
         {
-            HashToExternalScenePath.Clear();
-            ExternalScenePathToHash.Clear();
-            foreach (var scenePath in scenePaths)
-            {
-                var hash = XXHash.Hash32(scenePath);
-                HashToExternalScenePath.Add(hash, scenePath);
-                ExternalScenePathToHash.Add(scenePath, hash);
-            }
+            var hash = XXHash.Hash32(addressablePath);
+            HashToAddressableName.Add(hash, addressablePath);
+            AddressableNameOrScenePathToHash.Add(editorScenePath, hash);
+            AddressableNameOrScenePathToHash.Add(addressablePath, hash);
         }
 
         /// <summary>
@@ -753,7 +749,7 @@ namespace Unity.Netcode
         /// </summary>
         internal string ScenePathFromHash(uint sceneHash)
         {
-            if (HashToExternalScenePath.TryGetValue(sceneHash, out var externalScenePath))
+            if (HashToAddressableName.TryGetValue(sceneHash, out var externalScenePath))
             {
                 return externalScenePath;
             }
@@ -773,7 +769,7 @@ namespace Unity.Netcode
         /// </summary>
         internal uint SceneHashFromNameOrPath(string sceneNameOrPath)
         {
-            if (ExternalScenePathToHash.TryGetValue(sceneNameOrPath, out var externalSceneHash))
+            if (AddressableNameOrScenePathToHash.TryGetValue(sceneNameOrPath, out var externalSceneHash))
             {
                 return externalSceneHash;
             }
@@ -2064,6 +2060,7 @@ namespace Unity.Netcode
                     {
                         continue;
                     }
+
                     sceneEventData.SceneHash = SceneHashFromNameOrPath(scene.path);
 
                     // If we are just a normal client, then always use the server scene handle
