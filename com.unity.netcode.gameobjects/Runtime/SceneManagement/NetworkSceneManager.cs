@@ -719,14 +719,17 @@ namespace Unity.Netcode
         /// <summary>
         /// Register scene from outside of build (e.g. from an Addressables group).
         /// </summary>
-        /// <param name="scenePaths">The paths of the external scenes to register.</param>
+        /// <param name="addressablePath">The addressable path to the scene</param>
+        /// <param name="editorScenePath">The asset path to the scene</param>
         public void RegisterAddressableScene(string addressablePath, string editorScenePath)
         {
             Debug.Log($"Registering addressable scene: {addressablePath} with editor scene path: {editorScenePath}");
             var hash = XXHash.Hash32(addressablePath);
-            HashToAddressableName.Add(hash, addressablePath);
-            AddressableNameOrScenePathToHash.Add(editorScenePath, hash);
-            AddressableNameOrScenePathToHash.Add(addressablePath, hash);
+            HashToAddressableName[hash] = addressablePath;
+
+            // We add both here because scene.path can be different in editor and in build, depending on addressable naming settings.
+            AddressableNameOrScenePathToHash[editorScenePath] = hash;
+            AddressableNameOrScenePathToHash[addressablePath] = hash;
         }
 
         /// <summary>
