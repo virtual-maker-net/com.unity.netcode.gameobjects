@@ -678,8 +678,8 @@ namespace Unity.Netcode
         /// </summary>
         internal string GetSceneNameFromPath(string scenePath)
         {
-            var begin = scenePath.LastIndexOf("/", StringComparison.Ordinal) + 1;
-            var end = scenePath.LastIndexOf(".", StringComparison.Ordinal);
+            var begin = scenePath.Contains("/") ? scenePath.LastIndexOf("/", StringComparison.Ordinal) + 1 : 0;
+            var end = scenePath.Contains(".") ? scenePath.LastIndexOf(".", StringComparison.Ordinal) : scenePath.Length;
             return scenePath.Substring(begin, end - begin);
         }
 
@@ -722,6 +722,7 @@ namespace Unity.Netcode
         /// <param name="scenePaths">The paths of the external scenes to register.</param>
         public void RegisterAddressableScene(string addressablePath, string editorScenePath)
         {
+            Debug.Log($"Registering addressable scene: {addressablePath} with editor scene path: {editorScenePath}");
             var hash = XXHash.Hash32(addressablePath);
             HashToAddressableName.Add(hash, addressablePath);
             AddressableNameOrScenePathToHash.Add(editorScenePath, hash);
@@ -741,7 +742,10 @@ namespace Unity.Netcode
             {
                 return "No Scene";
             }
-            return GetSceneNameFromPath(ScenePathFromHash(sceneHash));
+
+            var result = GetSceneNameFromPath(ScenePathFromHash(sceneHash));
+            Debug.Log($"SceneNameFromHash: {sceneHash} = {result}");
+            return result;
         }
 
         /// <summary>
@@ -769,27 +773,34 @@ namespace Unity.Netcode
         /// </summary>
         internal uint SceneHashFromNameOrPath(string sceneNameOrPath)
         {
+            uint result = 0;
+
             if (AddressableNameOrScenePathToHash.TryGetValue(sceneNameOrPath, out var externalSceneHash))
             {
-                return externalSceneHash;
-            }
-
-            var buildIndex = SceneUtility.GetBuildIndexByScenePath(sceneNameOrPath);
-            if (buildIndex >= 0)
-            {
-                if (BuildIndexToHash.ContainsKey(buildIndex))
-                {
-                    return BuildIndexToHash[buildIndex];
-                }
-                else
-                {
-                    throw new Exception($"Scene '{sceneNameOrPath}' has a build index of {buildIndex} that does not exist in the {nameof(BuildIndexToHash)} table!");
-                }
+                result = externalSceneHash;
             }
             else
             {
-                throw new Exception($"Scene '{sceneNameOrPath}' couldn't be loaded because it has not been added to the build settings scenes in build list.");
+                var buildIndex = SceneUtility.GetBuildIndexByScenePath(sceneNameOrPath);
+                if (buildIndex >= 0)
+                {
+                    if (BuildIndexToHash.ContainsKey(buildIndex))
+                    {
+                        result = BuildIndexToHash[buildIndex];
+                    }
+                    else
+                    {
+                        throw new Exception($"Scene '{sceneNameOrPath}' has a build index of {buildIndex} that does not exist in the {nameof(BuildIndexToHash)} table!");
+                    }
+                }
+                else
+                {
+                    throw new Exception($"Scene '{sceneNameOrPath}' couldn't be loaded because it has not been added to the build settings scenes in build list.");
+                }
             }
+
+            Debug.Log($"SceneHashFromNameOrPath: {sceneNameOrPath} = {result}");
+            return result;
         }
 
         /// <summary>
