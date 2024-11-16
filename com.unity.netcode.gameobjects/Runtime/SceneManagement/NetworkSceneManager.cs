@@ -528,12 +528,12 @@ namespace Unity.Netcode
         /// <summary>
         /// Hash to external scene path lookup table
         /// </summary>
-        internal Dictionary<uint, string> HashToAddressableName = new Dictionary<uint, string>();
+        internal Dictionary<uint, string> HashToAddressableKey = new Dictionary<uint, string>();
 
         /// <summary>
         /// External scene name to hash lookup table
         /// </summary>
-        internal Dictionary<string, uint> AddressableNameOrScenePathToHash = new Dictionary<string, uint>();
+        internal Dictionary<string, uint> AddressableKeyToHash = new Dictionary<string, uint>();
 
         /// <summary>
         /// The Condition: While a scene is asynchronously loaded in single loading scene mode, if any new NetworkObjects are spawned
@@ -717,19 +717,15 @@ namespace Unity.Netcode
         }
 
         /// <summary>
-        /// Register scene from outside of build (e.g. from an Addressables group).
+        /// Register scene that is preloaded from Addressable
         /// </summary>
-        /// <param name="addressablePath">The addressable path to the scene</param>
-        /// <param name="editorScenePath">The asset path to the scene</param>
-        public void RegisterAddressableScene(string addressablePath, string editorScenePath)
+        /// <param name="addressableKey">The addressable runtime key of the scene</param>
+        public void RegisterAddressableScene(string addressableKey)
         {
-            Debug.Log($"Registering addressable scene: {addressablePath} with editor scene path: {editorScenePath}");
-            var hash = XXHash.Hash32(addressablePath);
-            HashToAddressableName[hash] = addressablePath;
-
-            // We add both here because scene.path can be different in editor and in build, depending on addressable naming settings.
-            AddressableNameOrScenePathToHash[editorScenePath] = hash;
-            AddressableNameOrScenePathToHash[addressablePath] = hash;
+            Debug.Log($"Registering addressable scene: {addressableKey}");
+            var hash = XXHash.Hash32(addressableKey);
+            HashToAddressableKey[hash] = addressableKey;
+            AddressableKeyToHash[addressableKey] = hash;
         }
 
         /// <summary>
@@ -756,8 +752,12 @@ namespace Unity.Netcode
         /// </summary>
         internal string ScenePathFromHash(uint sceneHash)
         {
-            if (HashToAddressableName.TryGetValue(sceneHash, out var externalScenePath))
+            if (HashToAddressableKey.TryGetValue(sceneHash, out var externalScenePath))
             {
+#if UNITY_EDITOR
+                // NOTE: Only works with addressables fast play mode script
+                externalScenePath = UnityEditor.AssetDatabase.GUIDToAssetPath(externalScenePath);
+#endif
                 return externalScenePath;
             }
             else if (HashToBuildIndex.ContainsKey(sceneHash))
@@ -776,34 +776,32 @@ namespace Unity.Netcode
         /// </summary>
         internal uint SceneHashFromNameOrPath(string sceneNameOrPath)
         {
-            uint result = 0;
-
-            if (AddressableNameOrScenePathToHash.TryGetValue(sceneNameOrPath, out var externalSceneHash))
+#if UNITY_EDITOR
+            // NOTE: Only works with addressables fast play mode script
+            sceneNameOrPath = UnityEditor.AssetDatabase.AssetPathToGUID(sceneNameOrPath);
+#endif
+            if (AddressableKeyToHash.TryGetValue(sceneNameOrPath, out var externalSceneHash))
             {
-                result = externalSceneHash;
+                Debug.Log($"SceneHashFromNameOrPath: {sceneNameOrPath} = {externalSceneHash}");
+                return externalSceneHash;
             }
-            else
+
+            var buildIndex = SceneUtility.GetBuildIndexByScenePath(sceneNameOrPath);
+            if (buildIndex >= 0)
             {
-                var buildIndex = SceneUtility.GetBuildIndexByScenePath(sceneNameOrPath);
-                if (buildIndex >= 0)
+                if (BuildIndexToHash.ContainsKey(buildIndex))
                 {
-                    if (BuildIndexToHash.ContainsKey(buildIndex))
-                    {
-                        result = BuildIndexToHash[buildIndex];
-                    }
-                    else
-                    {
-                        throw new Exception($"Scene '{sceneNameOrPath}' has a build index of {buildIndex} that does not exist in the {nameof(BuildIndexToHash)} table!");
-                    }
+                    return BuildIndexToHash[buildIndex];
                 }
                 else
                 {
-                    throw new Exception($"Scene '{sceneNameOrPath}' couldn't be loaded because it has not been added to the build settings scenes in build list.");
+                    throw new Exception($"Scene '{sceneNameOrPath}' has a build index of {buildIndex} that does not exist in the {nameof(BuildIndexToHash)} table!");
                 }
             }
-
-            Debug.Log($"SceneHashFromNameOrPath: {sceneNameOrPath} = {result}");
-            return result;
+            else
+            {
+                throw new Exception($"Scene '{sceneNameOrPath}' couldn't be loaded because it has not been added to the build settings scenes in build list.");
+            }
         }
 
         /// <summary>
