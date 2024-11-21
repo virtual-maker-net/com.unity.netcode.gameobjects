@@ -526,6 +526,16 @@ namespace Unity.Netcode
         internal Dictionary<int, uint> BuildIndexToHash = new Dictionary<int, uint>();
 
         /// <summary>
+        /// Hash to external scene path lookup table
+        /// </summary>
+        internal Dictionary<uint, string> HashToAddressableKey = new Dictionary<uint, string>();
+
+        /// <summary>
+        /// External scene name to hash lookup table
+        /// </summary>
+        internal Dictionary<string, uint> AddressableKeyToHash = new Dictionary<string, uint>();
+
+        /// <summary>
         /// The Condition: While a scene is asynchronously loaded in single loading scene mode, if any new NetworkObjects are spawned
         /// they need to be moved into the do not destroy temporary scene
         /// When it is set: Just before starting the asynchronous loading call
@@ -668,8 +678,8 @@ namespace Unity.Netcode
         /// </summary>
         internal string GetSceneNameFromPath(string scenePath)
         {
-            var begin = scenePath.LastIndexOf("/", StringComparison.Ordinal) + 1;
-            var end = scenePath.LastIndexOf(".", StringComparison.Ordinal);
+            var begin = scenePath.Contains("/") ? scenePath.LastIndexOf("/", StringComparison.Ordinal) + 1 : 0;
+            var end = scenePath.Contains(".") ? scenePath.LastIndexOf(".", StringComparison.Ordinal) : scenePath.Length;
             return scenePath.Substring(begin, end - begin);
         }
 
@@ -707,6 +717,18 @@ namespace Unity.Netcode
         }
 
         /// <summary>
+        /// Register scene that is preloaded from Addressable
+        /// </summary>
+        /// <param name="addressableKey">The addressable runtime key of the scene</param>
+        public void RegisterAddressableScene(string addressableKey)
+        {
+            Debug.Log($"Registering addressable scene: {addressableKey}");
+            var hash = XXHash.Hash32(addressableKey);
+            HashToAddressableKey[hash] = addressableKey;
+            AddressableKeyToHash[addressableKey] = hash;
+        }
+
+        /// <summary>
         /// Gets the scene name from a hash value generated from the full scene path
         /// </summary>
         internal string SceneNameFromHash(uint sceneHash)
@@ -719,7 +741,10 @@ namespace Unity.Netcode
             {
                 return "No Scene";
             }
-            return GetSceneNameFromPath(ScenePathFromHash(sceneHash));
+
+            var result = GetSceneNameFromPath(ScenePathFromHash(sceneHash));
+            Debug.Log($"SceneNameFromHash: {sceneHash} = {result}");
+            return result;
         }
 
         /// <summary>
@@ -727,7 +752,15 @@ namespace Unity.Netcode
         /// </summary>
         internal string ScenePathFromHash(uint sceneHash)
         {
-            if (HashToBuildIndex.ContainsKey(sceneHash))
+            if (HashToAddressableKey.TryGetValue(sceneHash, out var externalScenePath))
+            {
+#if UNITY_EDITOR
+                // NOTE: Only works with addressables fast play mode script
+                externalScenePath = UnityEditor.AssetDatabase.GUIDToAssetPath(externalScenePath);
+#endif
+                return externalScenePath;
+            }
+            else if (HashToBuildIndex.ContainsKey(sceneHash))
             {
                 return SceneUtility.GetScenePathByBuildIndex(HashToBuildIndex[sceneHash]);
             }
@@ -743,6 +776,18 @@ namespace Unity.Netcode
         /// </summary>
         internal uint SceneHashFromNameOrPath(string sceneNameOrPath)
         {
+            var addressableKey = sceneNameOrPath;
+
+#if UNITY_EDITOR
+            // NOTE: Only works with addressables fast play mode script
+            addressableKey = UnityEditor.AssetDatabase.AssetPathToGUID(sceneNameOrPath);
+#endif
+            if (AddressableKeyToHash.TryGetValue(addressableKey, out var externalSceneHash))
+            {
+                Debug.Log($"SceneHashFromNameOrPath: {addressableKey} = {externalSceneHash}");
+                return externalSceneHash;
+            }
+
             var buildIndex = SceneUtility.GetBuildIndexByScenePath(sceneNameOrPath);
             if (buildIndex >= 0)
             {
@@ -1999,10 +2044,7 @@ namespace Unity.Netcode
             sceneEventData.LoadSceneMode = ClientSynchronizationMode;
             var activeScene = SceneManager.GetActiveScene();
             sceneEventData.SceneEventType = SceneEventType.Synchronize;
-            if (BuildIndexToHash.ContainsKey(activeScene.buildIndex))
-            {
-                sceneEventData.ActiveSceneHash = BuildIndexToHash[activeScene.buildIndex];
-            }
+            sceneEventData.ActiveSceneHash = SceneHashFromNameOrPath(activeScene.path);
 
             // Organize how (and when) we serialize our NetworkObjects
             for (int i = 0; i < SceneManager.sceneCount; i++)
@@ -2029,6 +2071,7 @@ namespace Unity.Netcode
                     {
                         continue;
                     }
+
                     sceneEventData.SceneHash = SceneHashFromNameOrPath(scene.path);
 
                     // If we are just a normal client, then always use the server scene handle
@@ -2338,13 +2381,10 @@ namespace Unity.Netcode
                             PopulateScenePlacedObjects(DontDestroyOnLoadScene, false);
 
                             // If needed, set the currently active scene
-                            if (HashToBuildIndex.ContainsKey(sceneEventData.ActiveSceneHash))
+                            var targetActiveScene = SceneManager.GetSceneByName(SceneNameFromHash(sceneEventData.ActiveSceneHash));
+                            if (targetActiveScene.isLoaded && targetActiveScene.handle != SceneManager.GetActiveScene().handle)
                             {
-                                var targetActiveScene = SceneManager.GetSceneByBuildIndex(HashToBuildIndex[sceneEventData.ActiveSceneHash]);
-                                if (targetActiveScene.isLoaded && targetActiveScene.handle != SceneManager.GetActiveScene().handle)
-                                {
-                                    SceneManager.SetActiveScene(targetActiveScene);
-                                }
+                                SceneManager.SetActiveScene(targetActiveScene);
                             }
 
                             // Spawn and Synchronize all NetworkObjects
