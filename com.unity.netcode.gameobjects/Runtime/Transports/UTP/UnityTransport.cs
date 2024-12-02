@@ -1263,6 +1263,30 @@ namespace Unity.Netcode.Transports.UTP
         }
 
         /// <summary>
+        /// Provides the <see cref="NetworkEndpoint"/> for the NGO client identifier specified.
+        /// </summary>
+        /// <remarks>
+        /// - This is only really useful for direct connections.
+        /// - Relay connections and clients connected using a distributed authority network topology will not provide the client's actual endpoint information.
+        /// - For LAN topologies this should work as long as it is a direct connection and not a relay connection.
+        /// </remarks>
+        /// <param name="clientId">NGO client identifier to get endpoint information about.</param>
+        /// <returns><see cref="NetworkEndpoint"/></returns>
+        public NetworkEndpoint GetEndpoint(ulong clientId)
+        {
+            if (m_Driver.IsCreated && m_NetworkManager != null && m_NetworkManager.IsListening)
+            {
+                var transportId = m_NetworkManager.ConnectionManager.ClientIdToTransportId(clientId);
+                var networkConnection = ParseClientId(transportId);
+                if (m_Driver.GetConnectionState(networkConnection) == NetworkConnection.State.Connected)
+                {
+                    return m_Driver.GetRemoteEndpoint(networkConnection);
+                }
+            }
+            return new NetworkEndpoint();
+        }
+
+        /// <summary>
         /// Initializes the transport
         /// </summary>
         /// <param name="networkManager">The NetworkManager that initialized and owns the transport</param>
@@ -1471,6 +1495,11 @@ namespace Unity.Netcode.Transports.UTP
         /// </summary>
         public override void Shutdown()
         {
+            if (m_NetworkManager && !m_NetworkManager.ShutdownInProgress)
+            {
+                Debug.LogWarning("Directly calling `UnityTransport.Shutdown()` results in unexpected shutdown behaviour. All pending events will be lost. Use `NetworkManager.Shutdown()` instead.");
+            }
+
             if (m_Driver.IsCreated)
             {
                 while (ProcessEvent() && m_Driver.IsCreated)
@@ -1495,6 +1524,7 @@ namespace Unity.Netcode.Transports.UTP
             DisposeInternals();
 
             m_ReliableReceiveQueues.Clear();
+            m_State = State.Disconnected;
 
             // We must reset this to zero because UTP actually re-uses clientIds if there is a clean disconnect
             m_ServerClientId = 0;
