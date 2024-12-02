@@ -1765,113 +1765,120 @@ namespace Unity.Netcode
 
         internal void DistributeNetworkObjects(ulong clientId)
         {
-            // Distributed authority mode ownership distribution
-            // DANGO-TODO-MVP: Remove the session owner object distribution check once the service handles object distribution
-            if (NetworkManager.DistributedAuthorityMode && (NetworkManager.DAHost || NetworkManager.CMBServiceConnection))
+            if (!NetworkManager.DistributedAuthorityMode)
             {
-                // DA-NGO CMB SERVICE NOTES: 
-                // The most basic object distribution should be broken up into a table of spawned object types
-                // where each type contains a list of each client's owned objects of that type that can be
-                // distributed.
-                // The table format:
-                // [GlobalObjectIdHashValue][ClientId][List of Owned Objects]
-                var distributedNetworkObjects = new Dictionary<uint, Dictionary<ulong, List<NetworkObject>>>();
+                return;
+            }
 
-                // DA-NGO CMB SERVICE NOTES:
-                // This is optional, but I found it easier to get the total count of spawned objects for each prefab
-                // type contained in the previous table in order to be able to calculate the targeted object distribution
-                // count of that type per client.
-                var objectTypeCount = new Dictionary<uint, int>();
+            if (NetworkManager.SessionConfig.ServiceSideDistribution)
+            {
+                return;
+            }
 
-                // Get all spawned objects by type and then by client owner that are spawned and can be distributed
-                GetObjectDistribution(ref distributedNetworkObjects, ref objectTypeCount);
 
-                var clientCount = NetworkManager.ConnectedClientsIds.Count;
+            // DA-NGO CMB SERVICE NOTES: 
+            // The most basic object distribution should be broken up into a table of spawned object types
+            // where each type contains a list of each client's owned objects of that type that can be
+            // distributed.
+            // The table format:
+            // [GlobalObjectIdHashValue][ClientId][List of Owned Objects]
+            var distributedNetworkObjects = new Dictionary<uint, Dictionary<ulong, List<NetworkObject>>>();
 
-                // Cycle through each prefab type 
-                foreach (var objectTypeEntry in distributedNetworkObjects)
+            // DA-NGO CMB SERVICE NOTES:
+            // This is optional, but I found it easier to get the total count of spawned objects for each prefab
+            // type contained in the previous table in order to be able to calculate the targeted object distribution
+            // count of that type per client.
+            var objectTypeCount = new Dictionary<uint, int>();
+
+            // Get all spawned objects by type and then by client owner that are spawned and can be distributed
+            GetObjectDistribution(ref distributedNetworkObjects, ref objectTypeCount);
+
+            var clientCount = NetworkManager.ConnectedClientsIds.Count;
+
+            // Cycle through each prefab type 
+            foreach (var objectTypeEntry in distributedNetworkObjects)
+            {
+                // Calculate the number of objects that should be distributed amongst the clients
+                var totalObjectsToDistribute = objectTypeCount[objectTypeEntry.Key];
+                var objPerClientF = totalObjectsToDistribute * (1.0f / clientCount);
+                var floorValue = (int)Math.Floor(objPerClientF);
+                var fractional = objPerClientF - floorValue;
+                var objPerClient = 0;
+                if (fractional >= 0.556f)
                 {
-                    // Calculate the number of objects that should be distributed amongst the clients
-                    var totalObjectsToDistribute = objectTypeCount[objectTypeEntry.Key];
-                    var objPerClientF = totalObjectsToDistribute * (1.0f / clientCount);
-                    var floorValue = (int)Math.Floor(objPerClientF);
-                    var fractional = objPerClientF - floorValue;
-                    var objPerClient = 0;
-                    if (fractional >= 0.556f)
-                    {
-                        objPerClient = (int)Math.Round(totalObjectsToDistribute * (1.0f / clientCount));
-                    }
-                    else
-                    {
-                        objPerClient = floorValue;
-                    }
+                    objPerClient = (int)Math.Round(totalObjectsToDistribute * (1.0f / clientCount));
+                }
+                else
+                {
+                    objPerClient = floorValue;
+                }
 
-                    // If the object per client count is zero, then move to the next type.
-                    if (objPerClient <= 0)
+                // If the object per client count is zero, then move to the next type.
+                if (objPerClient <= 0)
+                {
+                    continue;
+                }
+
+                // Evenly distribute this object type amongst the clients
+                foreach (var ownerList in objectTypeEntry.Value)
+                {
+                    if (ownerList.Value.Count <= 1)
                     {
                         continue;
                     }
 
-                    // Evenly distribute this object type amongst the clients
-                    foreach (var ownerList in objectTypeEntry.Value)
+                    var maxDistributeCount = Mathf.Max(ownerList.Value.Count - objPerClient, 1);
+                    var distributed = 0;
+
+                    // For now when we have more players then distributed NetworkObjects that
+                    // a specific client owns, just assign half of the NetworkObjects to the new client
+                    var offsetCount = Mathf.Max((int)Math.Round((float)(ownerList.Value.Count / objPerClient)), 1);
+                    if (EnableDistributeLogging)
                     {
-                        if (ownerList.Value.Count <= 1)
-                        {
-                            continue;
-                        }
+                        Debug.Log($"[{objPerClient} of {totalObjectsToDistribute}][Client-{ownerList.Key}] Count: {ownerList.Value.Count} | ObjPerClient: {objPerClient} | maxD: {maxDistributeCount} | Offset: {offsetCount}");
+                    }
 
-                        var maxDistributeCount = Mathf.Max(ownerList.Value.Count - objPerClient, 1);
-                        var distributed = 0;
-
-                        // For now when we have more players then distributed NetworkObjects that
-                        // a specific client owns, just assign half of the NetworkObjects to the new client
-                        var offsetCount = Mathf.Max((int)Math.Round((float)(ownerList.Value.Count / objPerClient)), 1);
-                        if (EnableDistributeLogging)
+                    for (int i = 0; i < ownerList.Value.Count; i++)
+                    {
+                        if ((i % offsetCount) == 0)
                         {
-                            Debug.Log($"[{objPerClient} of {totalObjectsToDistribute}][Client-{ownerList.Key}] Count: {ownerList.Value.Count} | ObjPerClient: {objPerClient} | maxD: {maxDistributeCount} | Offset: {offsetCount}");
-                        }
-
-                        for (int i = 0; i < ownerList.Value.Count; i++)
-                        {
-                            if ((i % offsetCount) == 0)
+                            ChangeOwnership(ownerList.Value[i], clientId, true);
+                            if (EnableDistributeLogging)
                             {
-                                ChangeOwnership(ownerList.Value[i], clientId, true);
-                                if (EnableDistributeLogging)
-                                {
-                                    Debug.Log($"[Client-{ownerList.Key}][NetworkObjectId-{ownerList.Value[i].NetworkObjectId} Distributed to Client-{clientId}");
-                                }
-                                distributed++;
+                                Debug.Log($"[Client-{ownerList.Key}][NetworkObjectId-{ownerList.Value[i].NetworkObjectId} Distributed to Client-{clientId}");
                             }
-                            if (distributed == maxDistributeCount)
-                            {
-                                break;
-                            }
+                            distributed++;
+                        }
+                        if (distributed == maxDistributeCount)
+                        {
+                            break;
                         }
                     }
-                }
-
-                // If EnableDistributeLogging is enabled, log the object type distribution counts per client
-                if (EnableDistributeLogging)
-                {
-                    var builder = new StringBuilder();
-                    distributedNetworkObjects.Clear();
-                    objectTypeCount.Clear();
-                    GetObjectDistribution(ref distributedNetworkObjects, ref objectTypeCount);
-                    builder.AppendLine($"Client Relative Distributed Object Count: (distribution follows)");
-                    // Cycle through each prefab type 
-                    foreach (var objectTypeEntry in distributedNetworkObjects)
-                    {
-                        builder.AppendLine($"[GID: {objectTypeEntry.Key} | {objectTypeEntry.Value.First().Value.First().name}][Total Count: {objectTypeCount[objectTypeEntry.Key]}]");
-                        builder.AppendLine($"[GID: {objectTypeEntry.Key} | {objectTypeEntry.Value.First().Value.First().name}] Distribution:");
-                        // Evenly distribute this type amongst clients
-                        foreach (var ownerList in objectTypeEntry.Value)
-                        {
-                            builder.AppendLine($"[Client-{ownerList.Key}] Count: {ownerList.Value.Count}");
-                        }
-                    }
-                    Debug.Log(builder.ToString());
                 }
             }
+
+            // If EnableDistributeLogging is enabled, log the object type distribution counts per client
+            if (EnableDistributeLogging)
+            {
+                var builder = new StringBuilder();
+                distributedNetworkObjects.Clear();
+                objectTypeCount.Clear();
+                GetObjectDistribution(ref distributedNetworkObjects, ref objectTypeCount);
+                builder.AppendLine($"Client Relative Distributed Object Count: (distribution follows)");
+                // Cycle through each prefab type 
+                foreach (var objectTypeEntry in distributedNetworkObjects)
+                {
+                    builder.AppendLine($"[GID: {objectTypeEntry.Key} | {objectTypeEntry.Value.First().Value.First().name}][Total Count: {objectTypeCount[objectTypeEntry.Key]}]");
+                    builder.AppendLine($"[GID: {objectTypeEntry.Key} | {objectTypeEntry.Value.First().Value.First().name}] Distribution:");
+                    // Evenly distribute this type amongst clients
+                    foreach (var ownerList in objectTypeEntry.Value)
+                    {
+                        builder.AppendLine($"[Client-{ownerList.Key}] Count: {ownerList.Value.Count}");
+                    }
+                }
+                Debug.Log(builder.ToString());
+            }
+
         }
 
         internal struct DeferredDespawnObject
