@@ -50,6 +50,11 @@ namespace Unity.Netcode
             }
         }
 
+        ~NetworkList()
+        {
+            Dispose();
+        }
+
         /// <inheritdoc />
         public override void ResetDirty()
         {
@@ -624,8 +629,16 @@ namespace Unity.Netcode
         /// </summary>
         public override void Dispose()
         {
-            m_List.Dispose();
-            m_DirtyEvents.Dispose();
+            if (m_List.IsCreated)
+            {
+                m_List.Dispose();
+            }
+
+            if (m_DirtyEvents.IsCreated)
+            {
+                m_DirtyEvents.Dispose();
+            }
+
             base.Dispose();
         }
     }
