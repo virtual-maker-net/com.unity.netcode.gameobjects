@@ -741,7 +741,6 @@ namespace Unity.Netcode
             {
                 return "No Scene";
             }
-
             return GetSceneNameFromPath(ScenePathFromHash(sceneHash));
         }
 
