@@ -722,7 +722,6 @@ namespace Unity.Netcode
         /// <param name="addressableKey">The addressable runtime key of the scene</param>
         public void RegisterAddressableScene(string addressableKey)
         {
-            Debug.Log($"Registering addressable scene: {addressableKey}");
             var hash = XXHash.Hash32(addressableKey);
             HashToAddressableKey[hash] = addressableKey;
             AddressableKeyToHash[addressableKey] = hash;
