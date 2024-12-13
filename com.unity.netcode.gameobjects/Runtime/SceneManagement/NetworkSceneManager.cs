@@ -774,20 +774,22 @@ namespace Unity.Netcode
         /// <summary>
         /// Gets the associated hash value for the scene name or path
         /// </summary>
-        internal uint SceneHashFromNameOrPath(string resourceLocation)
+        internal uint SceneHashFromNameOrPath(string sceneNameOrPath)
         {
 #if UNITY_EDITOR
-            if (Guid.TryParse(resourceLocation, out var guid))
+            var addressableKey = UnityEditor.AssetDatabase.AssetPathToGUID(sceneNameOrPath);
+
+            if (AddressableKeyToHash.TryGetValue(addressableKey, out var externalSceneHash))
             {
-                resourceLocation = UnityEditor.AssetDatabase.AssetPathToGUID(guid.ToString("N"));
+                return externalSceneHash;
             }
 #endif
-            if (AddressableKeyToHash.TryGetValue(resourceLocation, out var externalSceneHash))
+            if (AddressableKeyToHash.TryGetValue(sceneNameOrPath, out externalSceneHash))
             {
                 return externalSceneHash;
             }
 
-            var buildIndex = SceneUtility.GetBuildIndexByScenePath(resourceLocation);
+            var buildIndex = SceneUtility.GetBuildIndexByScenePath(sceneNameOrPath);
             if (buildIndex >= 0)
             {
                 if (BuildIndexToHash.ContainsKey(buildIndex))
@@ -796,12 +798,12 @@ namespace Unity.Netcode
                 }
                 else
                 {
-                    throw new Exception($"Scene '{resourceLocation}' has a build index of {buildIndex} that does not exist in the {nameof(BuildIndexToHash)} table!");
+                    throw new Exception($"Scene '{sceneNameOrPath}' has a build index of {buildIndex} that does not exist in the {nameof(BuildIndexToHash)} table!");
                 }
             }
             else
             {
-                throw new Exception($"Scene '{resourceLocation}' couldn't be loaded because it has not been added to the build settings scenes in build list.");
+                throw new Exception($"Scene '{sceneNameOrPath}' couldn't be loaded because it has not been added to the build settings scenes in build list.");
             }
         }
 
