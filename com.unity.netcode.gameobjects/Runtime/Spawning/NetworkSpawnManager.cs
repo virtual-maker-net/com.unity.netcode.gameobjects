@@ -736,12 +736,20 @@ namespace Unity.Netcode
         internal NetworkObject InstantiateAndSpawnNoParameterChecks(NetworkObject networkPrefab, ulong ownerClientId = NetworkManager.ServerClientId, bool destroyWithScene = false, bool isPlayerObject = false, bool forceOverride = false, Vector3 position = default, Quaternion rotation = default)
         {
             var networkObject = networkPrefab;
-            // Host spawns the ovveride and server spawns the original prefab unless forceOverride is set to true where both server or host will spawn the override.
-            // In distributed authority mode, we alaways get the override
-            if (forceOverride || NetworkManager.IsHost || NetworkManager.DistributedAuthorityMode)
+            // - Host and clients always instantiate the override if one exists.
+            // - Server instantiates the original prefab unless:
+            // -- forceOverride is set to true =or=
+            // -- The prefab has a registered prefab handler, then we let user code determine what to spawn.
+            // - Distributed authority mode always spawns the override if one exists.
+            if (forceOverride || NetworkManager.IsClient || NetworkManager.DistributedAuthorityMode || NetworkManager.PrefabHandler.ContainsHandler(networkPrefab.GlobalObjectIdHash))
             {
                 networkObject = GetNetworkObjectToSpawn(networkPrefab.GlobalObjectIdHash, ownerClientId, position, rotation);
             }
+            else // Under this case, server instantiate the prefab passed in.
+            {
+                networkObject = InstantiateNetworkPrefab(networkPrefab.gameObject, networkPrefab.GlobalObjectIdHash, position, rotation);
+            }
+
             if (networkObject == null)
             {
                 Debug.LogError($"Failed to instantiate and spawn {networkPrefab.name}!");
@@ -824,13 +832,34 @@ namespace Unity.Netcode
                 else
                 {
                     // Create prefab instance while applying any pre-assigned position and rotation values
-                    networkObject = UnityEngine.Object.Instantiate(networkPrefabReference).GetComponent<NetworkObject>();
-                    networkObject.transform.position = position ?? networkObject.transform.position;
-                    networkObject.transform.rotation = rotation ?? networkObject.transform.rotation;
-                    networkObject.NetworkManagerOwner = NetworkManager;
-                    networkObject.PrefabGlobalObjectIdHash = globalObjectIdHash;
+                    networkObject = InstantiateNetworkPrefab(networkPrefabReference, globalObjectIdHash, position, rotation);
                 }
             }
+            return networkObject;
+        }
+
+        /// <summary>
+        /// Instantiates a network prefab instance, assigns the base prefab <see cref="NetworkObject.GlobalObjectIdHash"/>, positions, and orients
+        /// the instance.
+        /// !!! Should only be invoked by <see cref="GetNetworkObjectToSpawn"/> unless used by an integration test !!!
+        /// </summary>
+        /// <remarks>
+        /// <param name="prefabGlobalObjectIdHash"> should be the base prefab <see cref="NetworkObject.GlobalObjectIdHash"/> value and not the
+        /// overrided value.
+        /// (Can be used for integration testing)
+        /// </remarks>
+        /// <param name="networkPrefab">prefab to instantiate</param>
+        /// <param name="prefabGlobalObjectIdHash"><see cref="NetworkObject.GlobalObjectIdHash"/> of the base prefab instance</param>
+        /// <param name="position">conditional position in place of the network prefab's default position</param>
+        /// <param name="rotation">conditional rotation in place of the network prefab's default rotation</param>
+        /// <returns>the instance of the <see cref="NetworkObject"/></returns>
+        internal NetworkObject InstantiateNetworkPrefab(GameObject networkPrefab, uint prefabGlobalObjectIdHash, Vector3? position, Quaternion? rotation)
+        {
+            var networkObject = UnityEngine.Object.Instantiate(networkPrefab).GetComponent<NetworkObject>();
+            networkObject.transform.position = position ?? networkObject.transform.position;
+            networkObject.transform.rotation = rotation ?? networkObject.transform.rotation;
+            networkObject.NetworkManagerOwner = NetworkManager;
+            networkObject.PrefabGlobalObjectIdHash = prefabGlobalObjectIdHash;
             return networkObject;
         }
 
@@ -1765,113 +1794,120 @@ namespace Unity.Netcode
 
         internal void DistributeNetworkObjects(ulong clientId)
         {
-            // Distributed authority mode ownership distribution
-            // DANGO-TODO-MVP: Remove the session owner object distribution check once the service handles object distribution
-            if (NetworkManager.DistributedAuthorityMode && (NetworkManager.DAHost || NetworkManager.CMBServiceConnection))
+            if (!NetworkManager.DistributedAuthorityMode)
             {
-                // DA-NGO CMB SERVICE NOTES: 
-                // The most basic object distribution should be broken up into a table of spawned object types
-                // where each type contains a list of each client's owned objects of that type that can be
-                // distributed.
-                // The table format:
-                // [GlobalObjectIdHashValue][ClientId][List of Owned Objects]
-                var distributedNetworkObjects = new Dictionary<uint, Dictionary<ulong, List<NetworkObject>>>();
+                return;
+            }
 
-                // DA-NGO CMB SERVICE NOTES:
-                // This is optional, but I found it easier to get the total count of spawned objects for each prefab
-                // type contained in the previous table in order to be able to calculate the targeted object distribution
-                // count of that type per client.
-                var objectTypeCount = new Dictionary<uint, int>();
+            if (NetworkManager.SessionConfig.ServiceSideDistribution)
+            {
+                return;
+            }
 
-                // Get all spawned objects by type and then by client owner that are spawned and can be distributed
-                GetObjectDistribution(ref distributedNetworkObjects, ref objectTypeCount);
 
-                var clientCount = NetworkManager.ConnectedClientsIds.Count;
+            // DA-NGO CMB SERVICE NOTES: 
+            // The most basic object distribution should be broken up into a table of spawned object types
+            // where each type contains a list of each client's owned objects of that type that can be
+            // distributed.
+            // The table format:
+            // [GlobalObjectIdHashValue][ClientId][List of Owned Objects]
+            var distributedNetworkObjects = new Dictionary<uint, Dictionary<ulong, List<NetworkObject>>>();
 
-                // Cycle through each prefab type 
-                foreach (var objectTypeEntry in distributedNetworkObjects)
+            // DA-NGO CMB SERVICE NOTES:
+            // This is optional, but I found it easier to get the total count of spawned objects for each prefab
+            // type contained in the previous table in order to be able to calculate the targeted object distribution
+            // count of that type per client.
+            var objectTypeCount = new Dictionary<uint, int>();
+
+            // Get all spawned objects by type and then by client owner that are spawned and can be distributed
+            GetObjectDistribution(ref distributedNetworkObjects, ref objectTypeCount);
+
+            var clientCount = NetworkManager.ConnectedClientsIds.Count;
+
+            // Cycle through each prefab type 
+            foreach (var objectTypeEntry in distributedNetworkObjects)
+            {
+                // Calculate the number of objects that should be distributed amongst the clients
+                var totalObjectsToDistribute = objectTypeCount[objectTypeEntry.Key];
+                var objPerClientF = totalObjectsToDistribute * (1.0f / clientCount);
+                var floorValue = (int)Math.Floor(objPerClientF);
+                var fractional = objPerClientF - floorValue;
+                var objPerClient = 0;
+                if (fractional >= 0.556f)
                 {
-                    // Calculate the number of objects that should be distributed amongst the clients
-                    var totalObjectsToDistribute = objectTypeCount[objectTypeEntry.Key];
-                    var objPerClientF = totalObjectsToDistribute * (1.0f / clientCount);
-                    var floorValue = (int)Math.Floor(objPerClientF);
-                    var fractional = objPerClientF - floorValue;
-                    var objPerClient = 0;
-                    if (fractional >= 0.556f)
-                    {
-                        objPerClient = (int)Math.Round(totalObjectsToDistribute * (1.0f / clientCount));
-                    }
-                    else
-                    {
-                        objPerClient = floorValue;
-                    }
+                    objPerClient = (int)Math.Round(totalObjectsToDistribute * (1.0f / clientCount));
+                }
+                else
+                {
+                    objPerClient = floorValue;
+                }
 
-                    // If the object per client count is zero, then move to the next type.
-                    if (objPerClient <= 0)
+                // If the object per client count is zero, then move to the next type.
+                if (objPerClient <= 0)
+                {
+                    continue;
+                }
+
+                // Evenly distribute this object type amongst the clients
+                foreach (var ownerList in objectTypeEntry.Value)
+                {
+                    if (ownerList.Value.Count <= 1)
                     {
                         continue;
                     }
 
-                    // Evenly distribute this object type amongst the clients
-                    foreach (var ownerList in objectTypeEntry.Value)
+                    var maxDistributeCount = Mathf.Max(ownerList.Value.Count - objPerClient, 1);
+                    var distributed = 0;
+
+                    // For now when we have more players then distributed NetworkObjects that
+                    // a specific client owns, just assign half of the NetworkObjects to the new client
+                    var offsetCount = Mathf.Max((int)Math.Round((float)(ownerList.Value.Count / objPerClient)), 1);
+                    if (EnableDistributeLogging)
                     {
-                        if (ownerList.Value.Count <= 1)
-                        {
-                            continue;
-                        }
+                        Debug.Log($"[{objPerClient} of {totalObjectsToDistribute}][Client-{ownerList.Key}] Count: {ownerList.Value.Count} | ObjPerClient: {objPerClient} | maxD: {maxDistributeCount} | Offset: {offsetCount}");
+                    }
 
-                        var maxDistributeCount = Mathf.Max(ownerList.Value.Count - objPerClient, 1);
-                        var distributed = 0;
-
-                        // For now when we have more players then distributed NetworkObjects that
-                        // a specific client owns, just assign half of the NetworkObjects to the new client
-                        var offsetCount = Mathf.Max((int)Math.Round((float)(ownerList.Value.Count / objPerClient)), 1);
-                        if (EnableDistributeLogging)
+                    for (int i = 0; i < ownerList.Value.Count; i++)
+                    {
+                        if ((i % offsetCount) == 0)
                         {
-                            Debug.Log($"[{objPerClient} of {totalObjectsToDistribute}][Client-{ownerList.Key}] Count: {ownerList.Value.Count} | ObjPerClient: {objPerClient} | maxD: {maxDistributeCount} | Offset: {offsetCount}");
-                        }
-
-                        for (int i = 0; i < ownerList.Value.Count; i++)
-                        {
-                            if ((i % offsetCount) == 0)
+                            ChangeOwnership(ownerList.Value[i], clientId, true);
+                            if (EnableDistributeLogging)
                             {
-                                ChangeOwnership(ownerList.Value[i], clientId, true);
-                                if (EnableDistributeLogging)
-                                {
-                                    Debug.Log($"[Client-{ownerList.Key}][NetworkObjectId-{ownerList.Value[i].NetworkObjectId} Distributed to Client-{clientId}");
-                                }
-                                distributed++;
+                                Debug.Log($"[Client-{ownerList.Key}][NetworkObjectId-{ownerList.Value[i].NetworkObjectId} Distributed to Client-{clientId}");
                             }
-                            if (distributed == maxDistributeCount)
-                            {
-                                break;
-                            }
+                            distributed++;
+                        }
+                        if (distributed == maxDistributeCount)
+                        {
+                            break;
                         }
                     }
-                }
-
-                // If EnableDistributeLogging is enabled, log the object type distribution counts per client
-                if (EnableDistributeLogging)
-                {
-                    var builder = new StringBuilder();
-                    distributedNetworkObjects.Clear();
-                    objectTypeCount.Clear();
-                    GetObjectDistribution(ref distributedNetworkObjects, ref objectTypeCount);
-                    builder.AppendLine($"Client Relative Distributed Object Count: (distribution follows)");
-                    // Cycle through each prefab type 
-                    foreach (var objectTypeEntry in distributedNetworkObjects)
-                    {
-                        builder.AppendLine($"[GID: {objectTypeEntry.Key} | {objectTypeEntry.Value.First().Value.First().name}][Total Count: {objectTypeCount[objectTypeEntry.Key]}]");
-                        builder.AppendLine($"[GID: {objectTypeEntry.Key} | {objectTypeEntry.Value.First().Value.First().name}] Distribution:");
-                        // Evenly distribute this type amongst clients
-                        foreach (var ownerList in objectTypeEntry.Value)
-                        {
-                            builder.AppendLine($"[Client-{ownerList.Key}] Count: {ownerList.Value.Count}");
-                        }
-                    }
-                    Debug.Log(builder.ToString());
                 }
             }
+
+            // If EnableDistributeLogging is enabled, log the object type distribution counts per client
+            if (EnableDistributeLogging)
+            {
+                var builder = new StringBuilder();
+                distributedNetworkObjects.Clear();
+                objectTypeCount.Clear();
+                GetObjectDistribution(ref distributedNetworkObjects, ref objectTypeCount);
+                builder.AppendLine($"Client Relative Distributed Object Count: (distribution follows)");
+                // Cycle through each prefab type 
+                foreach (var objectTypeEntry in distributedNetworkObjects)
+                {
+                    builder.AppendLine($"[GID: {objectTypeEntry.Key} | {objectTypeEntry.Value.First().Value.First().name}][Total Count: {objectTypeCount[objectTypeEntry.Key]}]");
+                    builder.AppendLine($"[GID: {objectTypeEntry.Key} | {objectTypeEntry.Value.First().Value.First().name}] Distribution:");
+                    // Evenly distribute this type amongst clients
+                    foreach (var ownerList in objectTypeEntry.Value)
+                    {
+                        builder.AppendLine($"[Client-{ownerList.Key}] Count: {ownerList.Value.Count}");
+                    }
+                }
+                Debug.Log(builder.ToString());
+            }
+
         }
 
         internal struct DeferredDespawnObject

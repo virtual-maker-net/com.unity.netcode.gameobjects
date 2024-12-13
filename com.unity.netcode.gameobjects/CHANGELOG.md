@@ -15,6 +15,11 @@ Additional documentation and release notes are available at [Multiplayer Documen
 
 ### Fixed
 
+- Fixed issue where the `NetworkObjectIdHash` value could be incorrect when entering play mode while still in prefab edit mode with pending changes and using MPPM. (#3162)
+- Fixed issue where a sever only `NetworkManager` instance would spawn the actual `NetworkPrefab`'s `GameObject` as opposed to creating an instance of it. (#3160)
+- Fixed issue where only the session owner (as opposed to all clients) would handle spawning prefab overrides properly when using a distributed authority network topology. (#3160)
+- Fixed issue where an exception was thrown when calling `NetworkManager.Shutdown` after calling `UnityTransport.Shutdown`. (#3118)
+- Fixed issue where `NetworkList` properties on in-scene placed `NetworkObject`s could cause small memory leaks when entering playmode. (#3147)
 - Fixed in-scene `NertworkObject` synchronization issue when loading a scene with currently connected clients connected to a session created by a `NetworkManager` started as a server (i.e. not as a host). (#3133)
 - Fixed issue where a `NetworkManager` started as a server would not add itself as an observer to in-scene placed `NetworkObject`s instantiated and spawned by a scene loading event. (#3133)
 - Fixed issue where spawning a player using `NetworkObject.InstantiateAndSpawn` or `NetworkSpawnManager.InstantiateAndSpawn` would not update the `NetworkSpawnManager.PlayerObjects` or assign the newly spawned player to the `NetworkClient.PlayerObject`. (#3122)
@@ -25,6 +30,7 @@ Additional documentation and release notes are available at [Multiplayer Documen
 
 ### Changed
 
+- Optimised `NetworkVariable` and `NetworkTransform` related packets when in Distributed Authority mode.
 - The Debug Simulator section of the Unity Transport component was removed. This section was not functional anymore and users are now recommended to use the more featureful [Network Simulator](https://docs-multiplayer.unity3d.com/tools/current/tools-network-simulator/) tool from the Multiplayer Tools package instead. (#3121)
 
 ## [2.1.1] - 2024-10-18
@@ -464,7 +470,7 @@ Additional documentation and release notes are available at [Multiplayer Documen
 - Fixed issue where invalid endpoint addresses were not being detected and returning false from NGO UnityTransport. (#2496)
 - Fixed some errors that could occur if a connection is lost and the loss is detected when attempting to write to the socket. (#2495)
 
-## Changed
+### Changed
 
 - Adding network prefabs before NetworkManager initialization is now supported. (#2565)
 - Connecting clients being synchronized now switch to the server's active scene before spawning and synchronizing NetworkObjects. (#2532)

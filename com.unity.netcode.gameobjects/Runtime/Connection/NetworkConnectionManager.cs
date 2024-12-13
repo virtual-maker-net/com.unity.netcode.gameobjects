@@ -10,15 +10,54 @@ using UnityEngine;
 
 namespace Unity.Netcode
 {
-
+    /// <summary>
+    /// The connection event type set within <see cref="ConnectionEventData"/> to signify the type of connection event notification received.   
+    /// </summary>
+    /// <remarks>
+    /// <see cref="ConnectionEventData"/> is returned as a parameter of the <see cref="NetworkManager.OnConnectionEvent"/> event notification.
+    /// <see cref="ClientConnected"/> and <see cref="ClientDisconnected"/> event types occur on the client-side of the newly connected client and on the server-side. <br />
+    /// <see cref="PeerConnected"/> and <see cref="PeerDisconnected"/> event types occur on connected clients to notify that a new client (peer) has joined/connected.
+    /// </remarks>
     public enum ConnectionEvent
     {
+        /// <summary>
+        /// This event is set on the client-side of the newly connected client and on the server-side.<br />
+        /// </summary>
+        /// <remarks>
+        /// On the newly connected client side, the <see cref="ConnectionEventData.ClientId"/> will be the <see cref="NetworkManager.LocalClientId"/>.<br />
+        /// On the server side, the <see cref="ConnectionEventData.ClientId"/> will be the ID of the client that just connected.
+        /// </remarks>
         ClientConnected,
+        /// <summary>
+        /// This event is set on clients that are already connected to the session.
+        /// </summary>
+        /// <remarks>
+        /// The <see cref="ConnectionEventData.ClientId"/> will be the ID of the client that just connected.
+        /// </remarks>
         PeerConnected,
+        /// <summary>
+        /// This event is set on the client-side of the client that disconnected client and on the server-side.
+        /// </summary>
+        /// <remarks>
+        /// On the disconnected client side, the <see cref="ConnectionEventData.ClientId"/> will be the <see cref="NetworkManager.LocalClientId"/>.<br />
+        /// On the server side, this will be the ID of the client that disconnected.
+        /// </remarks>
         ClientDisconnected,
+        /// <summary>
+        /// This event is set on clients that are already connected to the session.
+        /// </summary>
+        /// <remarks>
+        /// The <see cref="ConnectionEventData.ClientId"/> will be the ID of the client that just disconnected.
+        /// </remarks>
         PeerDisconnected
     }
 
+    /// <summary>
+    /// Returned as a parameter of the <see cref="NetworkManager.OnConnectionEvent"/> event notification.
+    /// </summary>
+    /// <remarks>
+    /// See <see cref="ConnectionEvent"/> for more details on the types of connection events received.
+    /// </remarks>
     public struct ConnectionEventData
     {
         public ConnectionEvent EventType;
@@ -563,7 +602,7 @@ namespace Unity.Netcode
         {
             var message = new ConnectionRequestMessage
             {
-                CMBServiceConnection = NetworkManager.CMBServiceConnection,
+                DistributedAuthority = NetworkManager.DistributedAuthorityMode,
                 // Since only a remote client will send a connection request, we should always force the rebuilding of the NetworkConfig hash value
                 ConfigHash = NetworkManager.NetworkConfig.GetConfig(false),
                 ShouldSendConnectionData = NetworkManager.NetworkConfig.ConnectionApproval,
@@ -571,8 +610,9 @@ namespace Unity.Netcode
                 MessageVersions = new NativeArray<MessageVersionData>(MessageManager.MessageHandlers.Length, Allocator.Temp)
             };
 
-            if (NetworkManager.CMBServiceConnection)
+            if (NetworkManager.DistributedAuthorityMode)
             {
+                message.ClientConfig.SessionConfig = NetworkManager.SessionConfig;
                 message.ClientConfig.TickRate = NetworkManager.NetworkConfig.TickRate;
                 message.ClientConfig.EnableSceneManagement = NetworkManager.NetworkConfig.EnableSceneManagement;
             }

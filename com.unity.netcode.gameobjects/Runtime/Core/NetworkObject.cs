@@ -102,6 +102,16 @@ namespace Unity.Netcode
         private const int k_SceneObjectType = 2;
         private const int k_SourceAssetObjectType = 3;
 
+        // Used to track any InContext or InIsolation prefab being edited.
+        private static PrefabStage s_PrefabStage;
+        // The network prefab asset that the edit mode scene has created an instance of (s_PrefabInstance).
+        private static NetworkObject s_PrefabAsset;
+        // The InContext or InIsolation edit mode network prefab scene instance of the prefab asset (s_PrefabAsset).
+        private static NetworkObject s_PrefabInstance;
+
+        private static bool s_DebugPrefabIdGeneration;
+
+
         [ContextMenu("Refresh In-Scene Prefab Instances")]
         internal void RefreshAllPrefabInstances()
         {
@@ -134,25 +144,119 @@ namespace Unity.Netcode
             NetworkObjectRefreshTool.ProcessScenes();
         }
 
+        /// <summary>
+        /// Register for <see cref="PrefabStage"/> opened and closing event notifications.
+        /// </summary>
+        [InitializeOnLoadMethod]
+        private static void OnApplicationStart()
+        {
+            PrefabStage.prefabStageOpened -= PrefabStageOpened;
+            PrefabStage.prefabStageOpened += PrefabStageOpened;
+            PrefabStage.prefabStageClosing -= PrefabStageClosing;
+            PrefabStage.prefabStageClosing += PrefabStageClosing;
+        }
+
+        private static void PrefabStageClosing(PrefabStage prefabStage)
+        {
+            // If domain reloading is enabled, then this will be null when we return from playmode.
+            if (s_PrefabStage == null)
+            {
+                // Determine if we have a network prefab opened in edit mode or not.
+                CheckPrefabStage(prefabStage);
+            }
+
+            s_PrefabStage = null;
+            s_PrefabInstance = null;
+            s_PrefabAsset = null;
+        }
+
+        private static void PrefabStageOpened(PrefabStage prefabStage)
+        {
+            // Determine if we have a network prefab opened in edit mode or not.
+            CheckPrefabStage(prefabStage);
+        }
+
+        /// <summary>
+        /// Determines if we have opened a network prefab in edit mode (InContext or InIsolation)
+        /// </summary>
+        /// <remarks>
+        /// InContext: Typically means a are in prefab edit mode for an in-scene placed network prefab instance.
+        /// (currently no such thing as a network prefab with nested network prefab instances)
+        /// 
+        /// InIsolation: Typically means we are in prefb edit mode for a prefab asset.
+        /// </remarks>
+        /// <param name="prefabStage"></param>
+        private static void CheckPrefabStage(PrefabStage prefabStage)
+        {
+            s_PrefabStage = prefabStage;
+            s_PrefabInstance = prefabStage.prefabContentsRoot?.GetComponent<NetworkObject>();
+            if (s_PrefabInstance)
+            {
+                // We acquire the source prefab that the prefab edit mode scene instance was instantiated from differently for InContext than InSolation.
+                if (s_PrefabStage.mode == PrefabStage.Mode.InContext && s_PrefabStage.openedFromInstanceRoot != null)
+                {
+                    // This is needed to handle the scenario where a user completely loads a new scene while in an InContext prefab edit mode.
+                    try
+                    {
+                        s_PrefabAsset = s_PrefabStage.openedFromInstanceRoot?.GetComponent<NetworkObject>();
+                    }
+                    catch
+                    {
+                        s_PrefabAsset = null;
+                    }
+                }
+                else
+                {
+                    // When editing in InIsolation mode, load the original prefab asset from the provided path.
+                    s_PrefabAsset = AssetDatabase.LoadAssetAtPath<NetworkObject>(s_PrefabStage.assetPath);
+                }
+
+                if (s_PrefabInstance.GlobalObjectIdHash != s_PrefabAsset.GlobalObjectIdHash)
+                {
+                    s_PrefabInstance.GlobalObjectIdHash = s_PrefabAsset.GlobalObjectIdHash;
+                    // For InContext mode, we don't want to record these modifications (the in-scene GlobalObjectIdHash is serialized with the scene).
+                    if (s_PrefabStage.mode == PrefabStage.Mode.InIsolation)
+                    {
+                        PrefabUtility.RecordPrefabInstancePropertyModifications(s_PrefabAsset);
+                    }
+                }
+            }
+            else
+            {
+                s_PrefabStage = null;
+                s_PrefabInstance = null;
+                s_PrefabAsset = null;
+            }
+        }
+
+        /// <summary>
+        /// GlobalObjectIdHash values are generated during validation.
+        /// </summary>
         internal void OnValidate()
         {
-            // do NOT regenerate GlobalObjectIdHash for NetworkPrefabs while Editor is in PlayMode
+            // Always exit early if we are in prefab edit mode and this instance is the
+            // prefab instance within the InContext or InIsolation edit scene.
+            if (s_PrefabInstance == this)
+            {
+                return;
+            }
+
+            // Do not regenerate GlobalObjectIdHash for NetworkPrefabs while Editor is in play mode.
             if (EditorApplication.isPlaying && !string.IsNullOrEmpty(gameObject.scene.name))
             {
                 return;
             }
 
-            // do NOT regenerate GlobalObjectIdHash if Editor is transitioning into or out of PlayMode
+            // Do not regenerate GlobalObjectIdHash if Editor is transitioning into or out of play mode.
             if (!EditorApplication.isPlaying && EditorApplication.isPlayingOrWillChangePlaymode)
             {
                 return;
             }
 
-            // Get a global object identifier for this network prefab
-            var globalId = GetGlobalId();
+            // Get a global object identifier for this network prefab.
+            var globalId = GlobalObjectId.GetGlobalObjectIdSlow(this);
 
-
-            // if the identifier type is 0, then don't update the GlobalObjectIdHash
+            // if the identifier type is 0, then don't update the GlobalObjectIdHash.
             if (globalId.identifierType == k_NullObjectType)
             {
                 return;
@@ -161,47 +265,34 @@ namespace Unity.Netcode
             var oldValue = GlobalObjectIdHash;
             GlobalObjectIdHash = globalId.ToString().Hash32();
 
-            // If the GlobalObjectIdHash value changed, then mark the asset dirty
+            // Always check for in-scene placed to assure any previous version scene assets with in-scene place NetworkObjects gets updated.
+            CheckForInScenePlaced();
+
+            // If the GlobalObjectIdHash value changed, then mark the asset dirty.
             if (GlobalObjectIdHash != oldValue)
             {
-                // Check if this is an in-scnee placed NetworkObject (Special Case for In-Scene Placed)
-                if (!IsEditingPrefab() && gameObject.scene.name != null && gameObject.scene.name != gameObject.name)
+                // Check if this is an in-scnee placed NetworkObject (Special Case for In-Scene Placed).
+                if (IsSceneObject.HasValue && IsSceneObject.Value)
                 {
-                    // Sanity check to make sure this is a scene placed object
+                    // Sanity check to make sure this is a scene placed object.
                     if (globalId.identifierType != k_SceneObjectType)
                     {
-                        // This should never happen, but in the event it does throw and error
+                        // This should never happen, but in the event it does throw and error.
                         Debug.LogError($"[{gameObject.name}] is detected as an in-scene placed object but its identifier is of type {globalId.identifierType}! **Report this error**");
                     }
 
-                    // If this is a prefab instance
+                    // If this is a prefab instance, then we want to mark it as having been updated in order for the udpated GlobalObjectIdHash value to be saved.
                     if (PrefabUtility.IsPartOfAnyPrefab(this))
                     {
-                        // We must invoke this in order for the modifications to get saved with the scene (does not mark scene as dirty)
+                        // We must invoke this in order for the modifications to get saved with the scene (does not mark scene as dirty).
                         PrefabUtility.RecordPrefabInstancePropertyModifications(this);
                     }
                 }
-                else // Otherwise, this is a standard network prefab asset so we just mark it dirty for the AssetDatabase to update it
+                else // Otherwise, this is a standard network prefab asset so we just mark it dirty for the AssetDatabase to update it.
                 {
                     EditorUtility.SetDirty(this);
                 }
             }
-
-            // Always check for in-scene placed to assure any previous version scene assets with in-scene place NetworkObjects gets updated
-            CheckForInScenePlaced();
-        }
-
-        private bool IsEditingPrefab()
-        {
-            // Check if we are directly editing the prefab
-            var stage = PrefabStageUtility.GetPrefabStage(gameObject);
-
-            // if we are not editing the prefab directly (or a sub-prefab), then return the object identifier
-            if (stage == null || stage.assetPath == null)
-            {
-                return false;
-            }
-            return true;
         }
 
         /// <summary>
@@ -212,13 +303,12 @@ namespace Unity.Netcode
         /// <remarks>
         /// This NetworkObject is considered an in-scene placed prefab asset instance if it is:
         /// - Part of a prefab
-        /// - Not being directly edited
         /// - Within a valid scene that is part of the scenes in build list
         /// (In-scene defined NetworkObjects that are not part of a prefab instance are excluded.)
         /// </remarks>
         private void CheckForInScenePlaced()
         {
-            if (PrefabUtility.IsPartOfAnyPrefab(this) && !IsEditingPrefab() && gameObject.scene.IsValid() && gameObject.scene.isLoaded && gameObject.scene.buildIndex >= 0)
+            if (PrefabUtility.IsPartOfAnyPrefab(this) && gameObject.scene.IsValid() && gameObject.scene.isLoaded && gameObject.scene.buildIndex >= 0)
             {
                 var prefab = PrefabUtility.GetCorrespondingObjectFromSource(gameObject);
                 var assetPath = AssetDatabase.GetAssetPath(prefab);
@@ -230,55 +320,6 @@ namespace Unity.Netcode
                 }
                 IsSceneObject = true;
             }
-        }
-
-        private GlobalObjectId GetGlobalId()
-        {
-            var instanceGlobalId = GlobalObjectId.GetGlobalObjectIdSlow(this);
-
-            // If not editing a prefab, then just use the generated id
-            if (!IsEditingPrefab())
-            {
-                return instanceGlobalId;
-            }
-
-            // If the asset doesn't exist at the given path, then return the object identifier
-            var prefabStageAssetPath = PrefabStageUtility.GetPrefabStage(gameObject).assetPath;
-            // If (for some reason) the asset path is null return the generated id
-            if (prefabStageAssetPath == null)
-            {
-                return instanceGlobalId;
-            }
-
-            var theAsset = AssetDatabase.LoadAssetAtPath<NetworkObject>(prefabStageAssetPath);
-            // If there is no asset at that path (for some odd/edge case reason), return the generated id
-            if (theAsset == null)
-            {
-                return instanceGlobalId;
-            }
-
-            // If we can't get the asset GUID and/or the file identifier, then return the object identifier
-            if (!AssetDatabase.TryGetGUIDAndLocalFileIdentifier(theAsset, out var guid, out long localFileId))
-            {
-                return instanceGlobalId;
-            }
-
-            // Note: If we reached this point, then we are most likely opening a prefab to edit.
-            // The instanceGlobalId will be constructed as if it is a scene object, however when it
-            // is serialized its value will be treated as a file asset (the "why" to the below code).
-
-            // Construct an imported asset identifier with the type being a source asset object type
-            var prefabGlobalIdText = string.Format(k_GlobalIdTemplate, k_SourceAssetObjectType, guid, (ulong)localFileId, 0);
-
-            // If we can't parse the result log an error and return the instanceGlobalId
-            if (!GlobalObjectId.TryParse(prefabGlobalIdText, out var prefabGlobalId))
-            {
-                Debug.LogError($"[GlobalObjectId Gen] Failed to parse ({prefabGlobalIdText}) returning default ({instanceGlobalId})! ** Please Report This Error **");
-                return instanceGlobalId;
-            }
-
-            // Otherwise, return the constructed identifier for the source prefab asset
-            return prefabGlobalId;
         }
 #endif // UNITY_EDITOR
 
@@ -1966,12 +2007,14 @@ namespace Unity.Netcode
 
         internal bool InternalTrySetParent(NetworkObject parent, bool worldPositionStays = true)
         {
-            if (parent != null && (IsSpawned ^ parent.IsSpawned))
+            if (parent != null && (IsSpawned ^ parent.IsSpawned) && NetworkManager != null && !NetworkManager.ShutdownInProgress)
             {
-                if (NetworkManager != null && !NetworkManager.ShutdownInProgress)
+                if (NetworkManager.LogLevel <= LogLevel.Developer)
                 {
-                    return false;
+                    var nameOfNotSpawnedObject = IsSpawned ? $" the parent ({parent.name})" : $"the child ({name})";
+                    NetworkLog.LogWarning($"Parenting failed because {nameOfNotSpawnedObject} is not spawned!");
                 }
+                return false;
             }
 
             m_CachedWorldPositionStays = worldPositionStays;
@@ -3246,14 +3289,15 @@ namespace Unity.Netcode
         }
 
         /// <summary>
-        /// Only applies to Hosts or session owners (for now)
+        /// Client-Server: Only applies to spawn authority (i.e. Server)
+        /// Distributed Authority: Applies to all clients since they all have spawn authority.
         /// Will return the registered source NetworkPrefab's GlobalObjectIdHash if one exists.
         /// Server and Clients will always return the NetworkObject's GlobalObjectIdHash.
         /// </summary>
         /// <returns>appropriate hash value</returns>
         internal uint CheckForGlobalObjectIdHashOverride()
         {
-            if (NetworkManager.IsServer || (NetworkManager.DistributedAuthorityMode && NetworkManager.LocalClient.IsSessionOwner))
+            if (NetworkManager.IsServer || NetworkManager.DistributedAuthorityMode)
             {
                 if (NetworkManager.PrefabHandler.ContainsHandler(this))
                 {

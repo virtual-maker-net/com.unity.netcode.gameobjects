@@ -80,6 +80,18 @@ namespace Unity.Netcode
         }
 #endif
 
+        internal SessionConfig SessionConfig;
+
+        /// <summary>
+        /// Used for internal testing purposes
+        /// </summary>
+        internal delegate SessionConfig OnGetSessionConfigHandler();
+        internal OnGetSessionConfigHandler OnGetSessionConfig;
+        private SessionConfig GetSessionConfig()
+        {
+            return OnGetSessionConfig != null ? OnGetSessionConfig.Invoke() : new SessionConfig();
+        }
+
         internal static bool IsDistributedAuthority;
 
         /// <summary>
@@ -943,6 +955,9 @@ namespace Unity.Netcode
                 return; // May occur when the component is added
             }
 
+            // Do a validation pass on NetworkConfig properties
+            NetworkConfig.OnValidate();
+
             if (GetComponentInChildren<NetworkObject>() != null)
             {
                 if (NetworkLog.CurrentLogLevel <= LogLevel.Normal)
@@ -1011,8 +1026,7 @@ namespace Unity.Netcode
         {
             if (IsListening && change == PlayModeStateChange.ExitingPlayMode)
             {
-                // Make sure we are not holding onto anything in case domain reload is disabled
-                ShutdownInternal();
+                OnApplicationQuit();
             }
         }
 #endif
@@ -1178,6 +1192,12 @@ namespace Unity.Netcode
             NetworkTransformUpdate.Clear();
 
             UpdateTopology();
+
+            // Always create a default session config when starting a NetworkManager instance
+            if (DistributedAuthorityMode)
+            {
+                SessionConfig = GetSessionConfig();
+            }
 
             // Make sure the ServerShutdownState is reset when initializing
             if (server)
