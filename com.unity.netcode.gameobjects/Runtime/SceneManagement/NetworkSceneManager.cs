@@ -742,9 +742,7 @@ namespace Unity.Netcode
                 return "No Scene";
             }
 
-            var result = GetSceneNameFromPath(ScenePathFromHash(sceneHash));
-            Debug.Log($"SceneNameFromHash: {sceneHash} = {result}");
-            return result;
+            return GetSceneNameFromPath(ScenePathFromHash(sceneHash));
         }
 
         /// <summary>
@@ -755,8 +753,10 @@ namespace Unity.Netcode
             if (HashToAddressableKey.TryGetValue(sceneHash, out var externalScenePath))
             {
 #if UNITY_EDITOR
-                // NOTE: Only works with addressables fast play mode script
-                externalScenePath = UnityEditor.AssetDatabase.GUIDToAssetPath(externalScenePath);
+                if (Guid.TryParse(externalScenePath, out var guid))
+                {
+                    externalScenePath = UnityEditor.AssetDatabase.GUIDToAssetPath(guid.ToString("N"));
+                }
 #endif
                 return externalScenePath;
             }
@@ -774,21 +774,20 @@ namespace Unity.Netcode
         /// <summary>
         /// Gets the associated hash value for the scene name or path
         /// </summary>
-        internal uint SceneHashFromNameOrPath(string sceneNameOrPath)
+        internal uint SceneHashFromNameOrPath(string resourceLocation)
         {
-            var addressableKey = sceneNameOrPath;
-
 #if UNITY_EDITOR
-            // NOTE: Only works with addressables fast play mode script
-            addressableKey = UnityEditor.AssetDatabase.AssetPathToGUID(sceneNameOrPath);
-#endif
-            if (AddressableKeyToHash.TryGetValue(addressableKey, out var externalSceneHash))
+            if (Guid.TryParse(resourceLocation, out var guid))
             {
-                Debug.Log($"SceneHashFromNameOrPath: {addressableKey} = {externalSceneHash}");
+                resourceLocation = UnityEditor.AssetDatabase.AssetPathToGUID(guid.ToString("N"));
+            }
+#endif
+            if (AddressableKeyToHash.TryGetValue(resourceLocation, out var externalSceneHash))
+            {
                 return externalSceneHash;
             }
 
-            var buildIndex = SceneUtility.GetBuildIndexByScenePath(sceneNameOrPath);
+            var buildIndex = SceneUtility.GetBuildIndexByScenePath(resourceLocation);
             if (buildIndex >= 0)
             {
                 if (BuildIndexToHash.ContainsKey(buildIndex))
@@ -797,12 +796,12 @@ namespace Unity.Netcode
                 }
                 else
                 {
-                    throw new Exception($"Scene '{sceneNameOrPath}' has a build index of {buildIndex} that does not exist in the {nameof(BuildIndexToHash)} table!");
+                    throw new Exception($"Scene '{resourceLocation}' has a build index of {buildIndex} that does not exist in the {nameof(BuildIndexToHash)} table!");
                 }
             }
             else
             {
-                throw new Exception($"Scene '{sceneNameOrPath}' couldn't be loaded because it has not been added to the build settings scenes in build list.");
+                throw new Exception($"Scene '{resourceLocation}' couldn't be loaded because it has not been added to the build settings scenes in build list.");
             }
         }
 
@@ -2078,7 +2077,6 @@ namespace Unity.Netcode
                     {
                         continue;
                     }
-
                     sceneEventData.SceneHash = SceneHashFromNameOrPath(scene.path);
 
                     // If we are just a normal client, then always use the server scene handle
