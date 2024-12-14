@@ -722,7 +722,6 @@ namespace Unity.Netcode
         /// <param name="addressableKey">The addressable runtime key of the scene</param>
         public void RegisterAddressableScene(string addressableKey)
         {
-            Debug.Log($"Registering addressable scene: {addressableKey}");
             var hash = XXHash.Hash32(addressableKey);
             HashToAddressableKey[hash] = addressableKey;
             AddressableKeyToHash[addressableKey] = hash;
@@ -741,10 +740,7 @@ namespace Unity.Netcode
             {
                 return "No Scene";
             }
-
-            var result = GetSceneNameFromPath(ScenePathFromHash(sceneHash));
-            Debug.Log($"SceneNameFromHash: {sceneHash} = {result}");
-            return result;
+            return GetSceneNameFromPath(ScenePathFromHash(sceneHash));
         }
 
         /// <summary>
@@ -755,8 +751,10 @@ namespace Unity.Netcode
             if (HashToAddressableKey.TryGetValue(sceneHash, out var externalScenePath))
             {
 #if UNITY_EDITOR
-                // NOTE: Only works with addressables fast play mode script
-                externalScenePath = UnityEditor.AssetDatabase.GUIDToAssetPath(externalScenePath);
+                if (Guid.TryParse(externalScenePath, out var guid))
+                {
+                    externalScenePath = UnityEditor.AssetDatabase.GUIDToAssetPath(guid.ToString("N"));
+                }
 #endif
                 return externalScenePath;
             }
@@ -776,15 +774,16 @@ namespace Unity.Netcode
         /// </summary>
         internal uint SceneHashFromNameOrPath(string sceneNameOrPath)
         {
-            var addressableKey = sceneNameOrPath;
-
 #if UNITY_EDITOR
-            // NOTE: Only works with addressables fast play mode script
-            addressableKey = UnityEditor.AssetDatabase.AssetPathToGUID(sceneNameOrPath);
-#endif
-            if (AddressableKeyToHash.TryGetValue(addressableKey, out var externalSceneHash))
+            var addressableKey = UnityEditor.AssetDatabase.AssetPathToGUID(sceneNameOrPath);
+
+            if (AddressableKeyToHash.TryGetValue(addressableKey, out var addressableHash))
             {
-                Debug.Log($"SceneHashFromNameOrPath: {addressableKey} = {externalSceneHash}");
+                return addressableHash;
+            }
+#endif
+            if (AddressableKeyToHash.TryGetValue(sceneNameOrPath, out var externalSceneHash))
+            {
                 return externalSceneHash;
             }
 
@@ -2078,7 +2077,6 @@ namespace Unity.Netcode
                     {
                         continue;
                     }
-
                     sceneEventData.SceneHash = SceneHashFromNameOrPath(scene.path);
 
                     // If we are just a normal client, then always use the server scene handle
