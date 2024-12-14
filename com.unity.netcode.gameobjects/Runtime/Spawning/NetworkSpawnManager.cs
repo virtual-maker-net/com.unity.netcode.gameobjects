@@ -422,27 +422,8 @@ namespace Unity.Netcode
         {
             if (NetworkManager.DistributedAuthorityMode && !NetworkManager.ShutdownInProgress)
             {
-                if (networkObject.IsOwnershipDistributable || networkObject.IsOwnershipTransferable)
-                {
-                    if (networkObject.IsOwner || NetworkManager.DAHost)
-                    {
-                        NetworkLog.LogWarning("DANGO-TODO: Determine if removing ownership should make the CMB Service redistribute ownership or if this just isn't a valid thing in DAMode.");
-                        return;
-                    }
-                    else
-                    {
-                        NetworkLog.LogError($"Only the owner is allowed to remove ownership in distributed authority mode!");
-                        return;
-                    }
-                }
-                else
-                {
-                    if (!NetworkManager.DAHost)
-                    {
-                        Debug.LogError($"Only {nameof(NetworkObject)}s with {nameof(NetworkObject.IsOwnershipDistributable)} or {nameof(NetworkObject.IsOwnershipTransferable)} set can perform ownership changes!");
-                    }
-                    return;
-                }
+                Debug.LogError($"Removing ownership is invalid in Distributed Authority Mode. Use {nameof(ChangeOwnership)} instead.");
+                return;
             }
             ChangeOwnership(networkObject, NetworkManager.ServerClientId, true);
         }
@@ -474,6 +455,18 @@ namespace Unity.Netcode
 
             if (NetworkManager.DistributedAuthorityMode)
             {
+                // Ensure only the session owner can change ownership (i.e. acquire) and that the session owner is not trying to assign a non-session owner client
+                // ownership of a NetworkObject with SessionOwner permissions.
+                if (networkObject.IsOwnershipSessionOwner && (!NetworkManager.LocalClient.IsSessionOwner || clientId != NetworkManager.CurrentSessionOwner))
+                {
+                    if (NetworkManager.LogLevel <= LogLevel.Developer)
+                    {
+                        NetworkLog.LogErrorServer($"[{networkObject.name}][Session Owner Only] You cannot change ownership of a {nameof(NetworkObject)} that has the {NetworkObject.OwnershipStatus.SessionOwner} flag set!");
+                    }
+                    networkObject.OnOwnershipPermissionsFailure?.Invoke(NetworkObject.OwnershipPermissionsFailureStatus.SessionOwnerOnly);
+                    return;
+                }
+
                 // If are not authorized and this is not an approved ownership change, then check to see if we can change ownership
                 if (!isAuthorized && !isRequestApproval)
                 {
@@ -771,7 +764,7 @@ namespace Unity.Netcode
         }
 
         /// <summary>
-        /// Gets the right NetworkObject prefab instance to spawn. If a handler is registered or there is an override assigned to the 
+        /// Gets the right NetworkObject prefab instance to spawn. If a handler is registered or there is an override assigned to the
         /// passed in globalObjectIdHash value, then that is what will be instantiated, spawned, and returned.
         /// </summary>
         internal NetworkObject GetNetworkObjectToSpawn(uint globalObjectIdHash, ulong ownerId, Vector3? position, Quaternion? rotation, bool isScenePlaced = false)
@@ -803,8 +796,8 @@ namespace Unity.Netcode
                         case NetworkPrefabOverride.Hash:
                         case NetworkPrefabOverride.Prefab:
                             {
-                                // When scene management is disabled and this is an in-scene placed NetworkObject, we want to always use the 
-                                // SourcePrefabToOverride and not any possible prefab override as a user might want to spawn overrides dynamically 
+                                // When scene management is disabled and this is an in-scene placed NetworkObject, we want to always use the
+                                // SourcePrefabToOverride and not any possible prefab override as a user might want to spawn overrides dynamically
                                 // but might want to use the same source network prefab as an in-scene placed NetworkObject.
                                 // (When scene management is enabled, clients don't delete their in-scene placed NetworkObjects prior to dynamically
                                 // spawning them so the original prefab placed is preserved and this is not needed)
@@ -998,7 +991,7 @@ namespace Unity.Netcode
         /// - NetworkObject when spawning a newly instantiated NetworkObject for the first time.
         /// - NetworkSceneManager after a server/session-owner has loaded a scene to locally spawn the newly instantiated in-scene placed NetworkObjects.
         /// - NetworkSpawnManager when spawning any already loaded in-scene placed NetworkObjects (client-server or session owner).
-        /// 
+        ///
         /// Client-Server:
         /// Server is the only instance that invokes this method.
         ///
@@ -1376,7 +1369,7 @@ namespace Unity.Netcode
                             }
                         }
 
-                        // If spawned, then despawn and potentially destroy. 
+                        // If spawned, then despawn and potentially destroy.
                         if (networkObjects[i].IsSpawned)
                         {
                             OnDespawnObject(networkObjects[i], shouldDestroy);
@@ -1746,6 +1739,11 @@ namespace Unity.Netcode
 
             foreach (var networkObject in NetworkManager.SpawnManager.SpawnedObjectsList)
             {
+                if (networkObject.IsOwnershipSessionOwner)
+                {
+                    continue;
+                }
+
                 if (networkObject.IsOwnershipDistributable && !networkObject.IsOwnershipLocked)
                 {
                     if (networkObject.transform.parent != null)
@@ -1756,17 +1754,15 @@ namespace Unity.Netcode
                             continue;
                         }
                     }
+                    // We have to check if it is an in-scene placed NetworkObject and if it is get the source prefab asset GlobalObjectIdHash value of the in-scene placed instance
+                    // since all in-scene placed instances use unique GlobalObjectIdHash values.
+                    var globalOjectIdHash = networkObject.IsSceneObject.HasValue && networkObject.IsSceneObject.Value ? networkObject.InScenePlacedSourceGlobalObjectIdHash : networkObject.GlobalObjectIdHash;
 
-                    if (networkObject.IsSceneObject.Value)
+                    if (!objectTypeCount.ContainsKey(globalOjectIdHash))
                     {
-                        continue;
+                        objectTypeCount.Add(globalOjectIdHash, 0);
                     }
-
-                    if (!objectTypeCount.ContainsKey(networkObject.GlobalObjectIdHash))
-                    {
-                        objectTypeCount.Add(networkObject.GlobalObjectIdHash, 0);
-                    }
-                    objectTypeCount[networkObject.GlobalObjectIdHash] += 1;
+                    objectTypeCount[globalOjectIdHash] += 1;
 
                     // DANGO-TODO-MVP: Remove this once the service handles object distribution
                     if (onlyIncludeOwnedObjects && !networkObject.IsOwner)
@@ -1774,20 +1770,21 @@ namespace Unity.Netcode
                         continue;
                     }
 
+
                     // Divide up by prefab type (GlobalObjectIdHash) to get a better distribution of object types
-                    if (!objectByTypeAndOwner.ContainsKey(networkObject.GlobalObjectIdHash))
+                    if (!objectByTypeAndOwner.ContainsKey(globalOjectIdHash))
                     {
-                        objectByTypeAndOwner.Add(networkObject.GlobalObjectIdHash, new Dictionary<ulong, List<NetworkObject>>());
+                        objectByTypeAndOwner.Add(globalOjectIdHash, new Dictionary<ulong, List<NetworkObject>>());
                     }
 
                     // Sub-divide each type by owner
-                    if (!objectByTypeAndOwner[networkObject.GlobalObjectIdHash].ContainsKey(networkObject.OwnerClientId))
+                    if (!objectByTypeAndOwner[globalOjectIdHash].ContainsKey(networkObject.OwnerClientId))
                     {
-                        objectByTypeAndOwner[networkObject.GlobalObjectIdHash].Add(networkObject.OwnerClientId, new List<NetworkObject>());
+                        objectByTypeAndOwner[globalOjectIdHash].Add(networkObject.OwnerClientId, new List<NetworkObject>());
                     }
 
                     // Add to the client's spawned object list
-                    objectByTypeAndOwner[networkObject.GlobalObjectIdHash][networkObject.OwnerClientId].Add(networkObject);
+                    objectByTypeAndOwner[globalOjectIdHash][networkObject.OwnerClientId].Add(networkObject);
                 }
             }
         }
@@ -1805,7 +1802,7 @@ namespace Unity.Netcode
             }
 
 
-            // DA-NGO CMB SERVICE NOTES: 
+            // DA-NGO CMB SERVICE NOTES:
             // The most basic object distribution should be broken up into a table of spawned object types
             // where each type contains a list of each client's owned objects of that type that can be
             // distributed.
@@ -1824,7 +1821,7 @@ namespace Unity.Netcode
 
             var clientCount = NetworkManager.ConnectedClientsIds.Count;
 
-            // Cycle through each prefab type 
+            // Cycle through each prefab type
             foreach (var objectTypeEntry in distributedNetworkObjects)
             {
                 // Calculate the number of objects that should be distributed amongst the clients
@@ -1872,7 +1869,7 @@ namespace Unity.Netcode
                         if ((i % offsetCount) == 0)
                         {
                             ChangeOwnership(ownerList.Value[i], clientId, true);
-                            if (EnableDistributeLogging)
+                            //if (EnableDistributeLogging)
                             {
                                 Debug.Log($"[Client-{ownerList.Key}][NetworkObjectId-{ownerList.Value[i].NetworkObjectId} Distributed to Client-{clientId}");
                             }
@@ -1894,7 +1891,7 @@ namespace Unity.Netcode
                 objectTypeCount.Clear();
                 GetObjectDistribution(ref distributedNetworkObjects, ref objectTypeCount);
                 builder.AppendLine($"Client Relative Distributed Object Count: (distribution follows)");
-                // Cycle through each prefab type 
+                // Cycle through each prefab type
                 foreach (var objectTypeEntry in distributedNetworkObjects)
                 {
                     builder.AppendLine($"[GID: {objectTypeEntry.Key} | {objectTypeEntry.Value.First().Value.First().name}][Total Count: {objectTypeCount[objectTypeEntry.Key]}]");
