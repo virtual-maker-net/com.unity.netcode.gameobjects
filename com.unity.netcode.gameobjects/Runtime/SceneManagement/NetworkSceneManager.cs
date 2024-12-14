@@ -777,12 +777,12 @@ namespace Unity.Netcode
 #if UNITY_EDITOR
             var addressableKey = UnityEditor.AssetDatabase.AssetPathToGUID(sceneNameOrPath);
 
-            if (AddressableKeyToHash.TryGetValue(addressableKey, out var externalSceneHash))
+            if (AddressableKeyToHash.TryGetValue(addressableKey, out var addressableHash))
             {
-                return externalSceneHash;
+                return addressableHash;
             }
 #endif
-            if (AddressableKeyToHash.TryGetValue(sceneNameOrPath, out externalSceneHash))
+            if (AddressableKeyToHash.TryGetValue(sceneNameOrPath, out var externalSceneHash))
             {
                 return externalSceneHash;
             }
