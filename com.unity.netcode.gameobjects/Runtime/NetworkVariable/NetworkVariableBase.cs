@@ -3,11 +3,20 @@ using UnityEngine;
 
 namespace Unity.Netcode
 {
+    /// <summary>
+    /// Defines update timing constraints for NetworkVariables
+    /// </summary>
     public struct NetworkVariableUpdateTraits
     {
+        /// <summary>
+        /// The minimum amount of time that must pass between sending updates. If this amount of time has not passed since the last update, dirtiness will be ignored.
+        /// </summary>
         [Tooltip("The minimum amount of time that must pass between sending updates. If this amount of time has not passed since the last update, dirtiness will be ignored.")]
         public float MinSecondsBetweenUpdates;
 
+        /// <summary>
+        /// The maximum amount of time that a variable can be dirty without sending an update. If this amount of time has passed since the last update, an update will be sent even if the dirtiness threshold has not been met.
+        /// </summary>
         [Tooltip("The maximum amount of time that a variable can be dirty without sending an update. If this amount of time has passed since the last update, an update will be sent even if the dirtiness threshold has not been met.")]
         public float MaxSecondsBetweenUpdates;
     }
@@ -53,6 +62,10 @@ namespace Unity.Netcode
 
         private protected NetworkManager m_NetworkManager => m_InternalNetworkManager;
 
+        /// <summary>
+        /// Gets the NetworkBehaviour instance associated with this network variable
+        /// </summary>
+        /// <returns>The NetworkBehaviour that owns this network variable</returns>
         public NetworkBehaviour GetBehaviour()
         {
             return m_NetworkBehaviour;
@@ -98,7 +111,7 @@ namespace Unity.Netcode
             if (!m_NetworkBehaviour.NetworkObject.NetworkManagerOwner)
             {
                 // Exit early if there has yet to be a NetworkManagerOwner assigned
-                // to the NetworkObject. This is ok because Initialize is invoked 
+                // to the NetworkObject. This is ok because Initialize is invoked
                 // multiple times until it is considered "initialized".
                 return;
             }
@@ -148,7 +161,7 @@ namespace Unity.Netcode
         /// <summary>
         /// Sets the update traits for this network variable to determine how frequently it will send updates.
         /// </summary>
-        /// <param name="traits"></param>
+        /// <param name="traits">The new update traits to apply to this network variable</param>
         public void SetUpdateTraits(NetworkVariableUpdateTraits traits)
         {
             UpdateTraits = traits;
@@ -159,7 +172,7 @@ namespace Unity.Netcode
         /// If not, no update will be sent even if the variable is dirty, unless the time since last update exceeds
         /// the <see cref="UpdateTraits"/>' <see cref="NetworkVariableUpdateTraits.MaxSecondsBetweenUpdates"/>.
         /// </summary>
-        /// <returns></returns>
+        /// <returns>True if the variable exceeds the dirtiness threshold or the time since the last update exceeds MaxSecondsBetweenUpdates. otherwise, false</returns>
         public virtual bool ExceedsDirtinessThreshold()
         {
             return true;
@@ -259,6 +272,9 @@ namespace Unity.Netcode
 
         internal static bool IgnoreInitializeWarning;
 
+        /// <summary>
+        /// Marks the associated NetworkBehaviour as dirty, indicating it needs synchronization
+        /// </summary>
         protected void MarkNetworkBehaviourDirty()
         {
             if (m_NetworkBehaviour == null)
@@ -371,6 +387,15 @@ namespace Unity.Netcode
         internal ulong OwnerClientId()
         {
             return m_NetworkBehaviour.NetworkObject.OwnerClientId;
+        }
+
+        /// <summary>
+        /// Primarily to check for collections dirty states when doing
+        /// a fully owner read/write NetworkVariable update.
+        /// </summary>
+        internal virtual void OnCheckIsDirtyState()
+        {
+
         }
 
         /// <summary>
